@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: fase4mspedidos
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5438/order_db}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: true
+  flyway:
+    enabled: ${SPRING_FLYWAY_ENABLED:true}
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    validate-on-migrate: true
+
+server:
+  port: ${SERVER_PORT:8084}
+
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    br.com.exemplo.order: ${LOG_LEVEL_APP:INFO}
+    org.flywaydb: ${LOG_LEVEL_FLYWAY:INFO}
+    org.hibernate.SQL: ${LOG_LEVEL_HIBERNATE:INFO}
+    org.springframework.web: ${LOG_LEVEL_SPRING_WEB:INFO}

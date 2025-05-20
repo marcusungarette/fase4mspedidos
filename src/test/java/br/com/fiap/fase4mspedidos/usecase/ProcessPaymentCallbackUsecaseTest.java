@@ -47,7 +47,6 @@ class ProcessPaymentCallbackUsecaseTest {
     private ArgumentCaptor<Integer> quantityCaptor;
 
     private Order mockOrder;
-    private PaymentNotification notification;
     private final LocalDateTime now = LocalDateTime.now();
     private final long orderId = 123L;
 
@@ -92,11 +91,12 @@ class ProcessPaymentCallbackUsecaseTest {
         when(notificationMock.getOrderId()).thenReturn(String.valueOf(orderId));
         when(notificationMock.getStatus()).thenReturn("REJECTED");
 
-        ProcessPaymentCallbackUsecase spyUsecase = spy(usecase);
-        doReturn(101L).when(spyUsecase).getProductIdFromSku("SKU-101");
-        doReturn(102L).when(spyUsecase).getProductIdFromSku("SKU-102");
+        Map<Long, Integer> stockOperations = new HashMap<>();
+        stockOperations.put(101L, 2);
+        stockOperations.put(102L, 1);
+        usecase.registerStockOperations(orderId, stockOperations);
 
-        spyUsecase.execute(notificationMock);
+        usecase.execute(notificationMock);
 
         verify(orderGateway).save(orderCaptor.capture());
         Order savedOrder = orderCaptor.getValue();
@@ -118,11 +118,12 @@ class ProcessPaymentCallbackUsecaseTest {
         when(notificationMock.getOrderId()).thenReturn(String.valueOf(orderId));
         when(notificationMock.getStatus()).thenReturn("REFUNDED");
 
-        ProcessPaymentCallbackUsecase spyUsecase = spy(usecase);
-        doReturn(101L).when(spyUsecase).getProductIdFromSku("SKU-101");
-        doReturn(102L).when(spyUsecase).getProductIdFromSku("SKU-102");
+        Map<Long, Integer> stockOperations = new HashMap<>();
+        stockOperations.put(101L, 2);
+        stockOperations.put(102L, 1);
+        usecase.registerStockOperations(orderId, stockOperations);
 
-        spyUsecase.execute(notificationMock);
+        usecase.execute(notificationMock);
 
         verify(orderGateway).save(orderCaptor.capture());
         Order savedOrder = orderCaptor.getValue();
@@ -145,51 +146,58 @@ class ProcessPaymentCallbackUsecaseTest {
 
     @Test
     void execute_ShouldThrowException_WhenOrderNotFound() {
-        // Arrange
         PaymentNotification notificationMock = mock(PaymentNotification.class);
         when(notificationMock.getOrderId()).thenReturn("999");
         when(orderGateway.findById(999L)).thenReturn(Optional.empty());
 
-        // Act & Assert
         assertThrows(OrderNotFoundException.class, () -> usecase.execute(notificationMock));
     }
 
     @Test
-    void restoreStock_ShouldCallInventoryClient_ForValidProductIds() throws Exception {
-        // Arrange
-        // Use reflection to access private method
-        Method restoreStockMethod = ProcessPaymentCallbackUsecase.class.getDeclaredMethod("restoreStock", Order.class);
-        restoreStockMethod.setAccessible(true);
+    void execute_ShouldNotRestoreStock_WhenNoStockOperationsRegistered() {
+        PaymentNotification notificationMock = mock(PaymentNotification.class);
+        when(notificationMock.getOrderId()).thenReturn(String.valueOf(orderId));
+        when(notificationMock.getStatus()).thenReturn("REJECTED");
 
-        // Use spy to make getProductIdFromSku return a valid ID for first item only
-        ProcessPaymentCallbackUsecase spyUsecase = spy(usecase);
-        doReturn(101L).when(spyUsecase).getProductIdFromSku("SKU-101");
-        doReturn(null).when(spyUsecase).getProductIdFromSku("SKU-102"); // Second item returns null
+        usecase.execute(notificationMock);
 
-        // Act
-        restoreStockMethod.invoke(spyUsecase, mockOrder);
-
-        // Assert
-        verify(inventoryClient, times(1)).restoreStock(eq(101L), eq(2));
-        verify(inventoryClient, never()).restoreStock(eq(102L), anyInt());
+        verify(orderGateway).save(any(Order.class));
+        verify(inventoryClient, never()).restoreStock(anyLong(), anyInt());
     }
 
     @Test
-    void getProductIdFromSku_ShouldExtractIdFromSku() throws Exception {
-        // Given the implementation we suggested
-        // Use reflection to access private method
-        Method getProductIdMethod = ProcessPaymentCallbackUsecase.class.getDeclaredMethod("getProductIdFromSku", String.class);
-        getProductIdMethod.setAccessible(true);
+    void restoreStockFromOperations_ShouldRestoreStock_WhenOperationsExist() throws Exception {
+        Method restoreStockMethod = ProcessPaymentCallbackUsecase.class.getDeclaredMethod(
+                "restoreStockFromOperations", Long.class);
+        restoreStockMethod.setAccessible(true);
 
-        // Test directly to improve coverage
-        // Since the actual implementation is stubbed in other tests
+        Map<Long, Integer> operations = new HashMap<>();
+        operations.put(101L, 2);
+        operations.put(102L, 1);
+        usecase.registerStockOperations(orderId, operations);
 
-        // Act & Assert for various inputs
-        assertNull(getProductIdMethod.invoke(usecase, (String)null));
-        assertNull(getProductIdMethod.invoke(usecase, ""));
+        restoreStockMethod.invoke(usecase, orderId);
 
-        // The actual method in your class returns null, so this is expected
-        assertNull(getProductIdMethod.invoke(usecase, "SKU-123"));
+        verify(inventoryClient, times(2)).restoreStock(productIdCaptor.capture(), quantityCaptor.capture());
+
+        List<Long> capturedProductIds = productIdCaptor.getAllValues();
+        List<Integer> capturedQuantities = quantityCaptor.getAllValues();
+
+        assertTrue(capturedProductIds.contains(101L));
+        assertTrue(capturedProductIds.contains(102L));
+        assertTrue(capturedQuantities.contains(2));
+        assertTrue(capturedQuantities.contains(1));
+    }
+
+    @Test
+    void restoreStockFromOperations_ShouldDoNothing_WhenNoOperationsExist() throws Exception {
+        Method restoreStockMethod = ProcessPaymentCallbackUsecase.class.getDeclaredMethod(
+                "restoreStockFromOperations", Long.class);
+        restoreStockMethod.setAccessible(true);
+
+        restoreStockMethod.invoke(usecase, orderId);
+
+        verify(inventoryClient, never()).restoreStock(anyLong(), anyInt());
     }
 
     @Test
@@ -207,7 +215,9 @@ class ProcessPaymentCallbackUsecaseTest {
             Map<Long, Map<Long, Integer>> orderStockOps = (Map<Long, Map<Long, Integer>>) field.get(usecase);
 
             assertTrue(orderStockOps.containsKey(orderId));
-            assertEquals(operations, orderStockOps.get(orderId));
+            assertEquals(operations.size(), orderStockOps.get(orderId).size());
+            assertEquals(operations.get(101L), orderStockOps.get(orderId).get(101L));
+            assertEquals(operations.get(102L), orderStockOps.get(orderId).get(102L));
         } catch (Exception e) {
             fail("Failed to access orderStockOperations field: " + e.getMessage());
         }
@@ -223,17 +233,52 @@ class ProcessPaymentCallbackUsecaseTest {
         operations2.put(102L, 3);
 
         usecase.registerStockOperations(orderId, operations1);
-        usecase.registerStockOperations(orderId, operations2); // Should overwrite
+        usecase.registerStockOperations(orderId, operations2);
 
-        // Assert - Use reflection to access private field
         try {
             java.lang.reflect.Field field = ProcessPaymentCallbackUsecase.class.getDeclaredField("orderStockOperations");
             field.setAccessible(true);
             Map<Long, Map<Long, Integer>> orderStockOps = (Map<Long, Map<Long, Integer>>) field.get(usecase);
 
             assertTrue(orderStockOps.containsKey(orderId));
-            assertEquals(operations2, orderStockOps.get(orderId));
-            assertFalse(orderStockOps.get(orderId).containsKey(101L)); // Should be overwritten
+            assertEquals(operations2.size(), orderStockOps.get(orderId).size());
+            assertEquals(operations2.get(102L), orderStockOps.get(orderId).get(102L));
+            assertFalse(orderStockOps.get(orderId).containsKey(101L)); // Deve ter sido sobrescrito
+        } catch (Exception e) {
+            fail("Failed to access orderStockOperations field: " + e.getMessage());
+        }
+    }
+
+    @Test
+    void registerStockOperations_ShouldNotRegister_WhenOperationsEmpty() {
+        Long orderId = 456L;
+        Map<Long, Integer> emptyOperations = new HashMap<>();
+
+        usecase.registerStockOperations(orderId, emptyOperations);
+
+        try {
+            java.lang.reflect.Field field = ProcessPaymentCallbackUsecase.class.getDeclaredField("orderStockOperations");
+            field.setAccessible(true);
+            Map<Long, Map<Long, Integer>> orderStockOps = (Map<Long, Map<Long, Integer>>) field.get(usecase);
+
+            assertFalse(orderStockOps.containsKey(orderId));
+        } catch (Exception e) {
+            fail("Failed to access orderStockOperations field: " + e.getMessage());
+        }
+    }
+
+    @Test
+    void registerStockOperations_ShouldNotRegister_WhenOperationsNull() {
+        Long orderId = 456L;
+
+        usecase.registerStockOperations(orderId, null);
+
+        try {
+            java.lang.reflect.Field field = ProcessPaymentCallbackUsecase.class.getDeclaredField("orderStockOperations");
+            field.setAccessible(true);
+            Map<Long, Map<Long, Integer>> orderStockOps = (Map<Long, Map<Long, Integer>>) field.get(usecase);
+
+            assertFalse(orderStockOps.containsKey(orderId));
         } catch (Exception e) {
             fail("Failed to access orderStockOperations field: " + e.getMessage());
         }
